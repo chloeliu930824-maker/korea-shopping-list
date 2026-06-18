@@ -39,7 +39,6 @@ const T = {
     status: { to_buy: "To Buy", bought: "Bought", sold_out: "Sold Out" },
     weight: { light: "🪶 Light", mid: "📦 Mid", heavy: "🧳 Heavy" },
     newGroup: "Day",
-    editGroup: "✏️",
     syncing: "🔄 Syncing...",
     syncSuccess: "✅ Cloud Synced",
   },
@@ -74,7 +73,6 @@ const T = {
     status: { to_buy: "待買", bought: "已買", sold_out: "售完" },
     weight: { light: "🪶 輕", mid: "📦 中", heavy: "🧳 重" },
     newGroup: "Day",
-    editGroup: "✏️",
     syncing: "🔄 同步中...",
     syncSuccess: "✅ 雲端已同步",
   },
@@ -252,17 +250,19 @@ function ItemRow({ item, onUpdate, onDelete, t }) {
 }
 
 function GroupCard({ group, allItems, rate, onRename, onDelete, onAddItem, onUpdateItem, onDeleteItem, t }) {
+  // 拿掉一開始的鉛筆圖案，只在點擊文字時變成 input 編輯模式
   const [editName, setEditName] = useState(false);
   const [nameVal, setNameVal] = useState(group.name);
-  const [collapsed, setCollapsed] = useState(false);
+  // 預設將折疊狀態設為 true (不展開)
+  const [collapsed, setCollapsed] = useState(true);
   const items = allItems.filter(i => i.groupId === group.id).map(i => ({ ...i, _rate: rate }));
   const total = items.filter(i => i.status !== "sold_out").reduce((s, i) => s + (Number(i.krw) || 0), 0);
   const boughtTotal = items.filter(i => i.status === "bought").reduce((s, i) => s + (Number(i.krw) || 0), 0);
   const heavy = items.filter(i => i.weight === "heavy").length;
 
   return (
-    <div style={{ marginBottom: 16 }}>
-      <div style={{ background: C.red, padding: "10px 14px", display: "flex", alignItems: "center", gap: 8 }}>
+    <div style={{ marginBottom: 16, boxSizing: "border-box" }}>
+      <div style={{ background: C.red, padding: "12px 14px", display: "flex", alignItems: "center", gap: 8 }}>
         <button onClick={() => setCollapsed(v => !v)} style={{ background: "none", border: "none", color: "#fff", fontSize: 14, cursor: "pointer", padding: 0, flexShrink: 0 }}>
           {collapsed ? "▶" : "▼"}
         </button>
@@ -273,7 +273,7 @@ function GroupCard({ group, allItems, rate, onRename, onDelete, onAddItem, onUpd
               onKeyDown={e => e.key === "Enter" && (onRename(group.id, nameVal), setEditName(false))}
               style={{ flex: 1, background: "transparent", border: "none", borderBottom: "1px solid #fff", color: "#fff", fontSize: 15, fontWeight: 800, outline: "none", fontFamily: "inherit" }} />
           : <span onClick={() => setEditName(true)} style={{ flex: 1, color: "#fff", fontSize: 15, fontWeight: 800, cursor: "pointer" }}>
-              {t.editGroup} {group.name}
+              {group.name}
             </span>
         }
         <div style={{ display: "flex", gap: 6, alignItems: "center", flexShrink: 0 }}>
@@ -323,16 +323,15 @@ export default function App() {
   const [lang, setLang] = useState("en");
   const t = T[lang];
   
+  // 預設不塞入初始 list，完美重現你截圖的乾淨預設狀態
   const [groups, setGroups] = useState(() => {
     const local = localStorage.getItem("kr_shop_groups");
-    if (local) return JSON.parse(local);
-    return [{ id: "g0_init", name: "Day 1" }];
+    return local ? JSON.parse(local) : [];
   });
 
   const [items, setItems] = useState(() => {
     const local = localStorage.getItem("kr_shop_items");
-    if (local) return JSON.parse(local);
-    return [{ id: "i0_init", groupId: "g0_init", name: "", image: null, krw: "", category: "", link: "", note: "", alt: "", weight: "", status: "to_buy" }];
+    return local ? JSON.parse(local) : [];
   });
 
   const [rate, setRate] = useState(0.023);
@@ -341,22 +340,17 @@ export default function App() {
   const [shareMsg, setShareMsg] = useState("");
   const [rateLoading, setRateLoading] = useState(false);
 
-  // 匿名登入使用者狀態與同步狀態
   const [user, setUser] = useState(null);
   const [syncStatus, setSyncStatus] = useState("");
 
-  // ==================== 核心邏輯：背景自動匿名登入機制 ====================
+  // 背景自動匿名儲存機制
   useEffect(() => {
-    // 檢查瀏覽器內是否已有現存的裝置 session 
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (session?.user) {
         setUser(session.user);
       } else {
-        // 如果是首次使用這台手機，直接在背景悄悄匿名登入，記住這台裝置
         supabase.auth.signInAnonymously().then(({ data, error }) => {
-          if (!error && data?.user) {
-            setUser(data.user);
-          }
+          if (!error && data?.user) setUser(data.user);
         });
       }
     });
@@ -368,7 +362,7 @@ export default function App() {
     return () => subscription.unsubscribe();
   }, []);
 
-  // 雲端資料載入
+  // 雲端資料同步載入
   useEffect(() => {
     if (!user) return;
     
@@ -397,7 +391,7 @@ export default function App() {
     loadCloudData();
   }, [user]);
 
-  // 本地暫存備份與雲端防抖動自動儲存
+  // 自動防抖儲存備份
   useEffect(() => {
     localStorage.setItem("kr_shop_groups", JSON.stringify(groups));
     localStorage.setItem("kr_shop_items", JSON.stringify(items));
@@ -428,7 +422,6 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [groups, items, user]);
 
-  // ==================== 匯率與基本邏輯 ====================
   const fetchRate = () => {
     setRateLoading(true);
     fetch("https://api.frankfurter.app/latest?from=KRW&to=TWD")
@@ -459,11 +452,13 @@ export default function App() {
   ].join("\n");
 
   return (
-    <div style={{ maxWidth: 480, margin: "0 auto", fontFamily: "'Noto Sans TC', sans-serif", background: C.bg, minHeight: "100vh" }}>
+    // 徹底將手機寬高設為 100% 滿版，加入 box-sizing 避免橫向或縱向壓縮擠壓
+    <div style={{ width: "100%", minHeight: "100vh", fontFamily: "'Noto Sans TC', sans-serif", background: C.bg, display: "flex", flexDirection: "column", boxSizing: "border-box" }}>
+      
       {/* Header */}
-      <div style={{ background: C.red, padding: "16px 16px 12px", position: "relative" }}>
+      <div style={{ background: C.red, padding: "16px 16px 12px", position: "relative", boxSizing: "border-box" }}>
         
-        {/* 右上角狀態區：僅保留語系切換與靜態同步狀態指示燈（徹底拿掉 Login / Logout 按鈕） */}
+        {/* 右上角狀態指示燈與語系 */}
         <div style={{ position: "absolute", top: 14, right: 14, display: "flex", gap: 6, alignItems: "center" }}>
           {syncStatus === "syncing" && <span style={{ fontSize: 11, color: "#fff" }}>{t.syncing}</span>}
           {syncStatus === "success" && <span style={{ fontSize: 11, color: "#bfffbf", fontWeight: "bold" }}>{t.syncSuccess}</span>}
@@ -498,7 +493,7 @@ export default function App() {
             { label: t.spent, val: `₩${boughtTotal.toLocaleString()}`, sub: `NT$${Math.round(boughtTotal * rate).toLocaleString()}` },
             { label: t.heavy, val: `🧳 ×${heavyCount}`, sub: t.items },
           ].map(({ label, val, sub }) => (
-            <div key={label} style={{ flex: 1, background: "rgba(0,0,0,0.18)", padding: "8px" }}>
+            <div key={label} style={{ flex: 1, background: "rgba(0,0,0,0.18)", padding: "8px", boxSizing: "border-box" }}>
               <div style={{ fontSize: 9, color: "rgba(255,255,255,0.65)", letterSpacing: 1 }}>{label}</div>
               <div style={{ fontSize: 13, fontWeight: 800, color: "#fff", marginTop: 2 }}>{val}</div>
               <div style={{ fontSize: 10, color: C.blue }}>{sub}</div>
@@ -508,7 +503,7 @@ export default function App() {
       </div>
 
       {/* Tabs */}
-      <div style={{ display: "flex", background: "#111", position: "sticky", top: 0, zIndex: 10 }}>
+      <div style={{ display: "flex", background: "#111", position: "sticky", top: 0, zIndex: 10, boxSizing: "border-box" }}>
         {[["list", t.list], ["share", t.share]].map(([key, label]) => (
           <button key={key} onClick={() => setTab(key)} style={{
             flex: 1, border: "none", padding: "13px", fontSize: 13, fontWeight: 800,
@@ -519,7 +514,8 @@ export default function App() {
         ))}
       </div>
 
-      <div style={{ padding: "14px 12px 100px" }}>
+      {/* 主體區塊 */}
+      <div style={{ padding: "14px 12px 100px", flex: 1, boxSizing: "border-box" }}>
         {tab === "list" && (
           <>
             {groups.map(g => (
@@ -533,21 +529,22 @@ export default function App() {
             ))}
             <button onClick={addGroup} style={{
               width: "100%", border: `2px dashed ${C.red}`, background: C.cream,
-              color: C.red, fontSize: 14, fontWeight: 800, padding: "14px",
-              cursor: "pointer", letterSpacing: 2, fontFamily: "inherit",
+              color: C.red, fontSize: 15, fontWeight: 800, padding: "14px",
+              cursor: "pointer", letterSpacing: 2, fontFamily: "inherit", boxSizing: "border-box",
+              boxShadow: "none"
             }}>{t.addGroup}</button>
           </>
         )}
 
         {tab === "share" && (
-          <div style={{ background: C.cream, border: `1.5px solid ${C.red}`, padding: 16 }}>
+          <div style={{ background: C.cream, border: `1.5px solid ${C.red}`, padding: 16, boxSizing: "border-box" }}>
             <ZigzagBorder />
             <div style={{ textAlign: "center", margin: "10px 0 8px" }}>
               <div style={{ fontSize: 16, fontWeight: 900, color: C.red, letterSpacing: 2 }}>{t.shareTitle}</div>
               <div style={{ fontSize: 12, color: C.gray, marginTop: 2 }}>{t.shareDesc}</div>
             </div>
             <Divider />
-            <pre style={{ fontSize: 12, color: C.black, lineHeight: 1.9, whiteSpace: "pre-wrap", fontFamily: "monospace", background: "#fff", padding: 12, border: `1px solid ${C.blue}`, maxHeight: 320, overflowY: "auto", margin: 0 }}>
+            <pre style={{ fontSize: 12, color: C.black, lineHeight: 1.9, whiteSpace: "pre-wrap", fontFamily: "monospace", background: "#fff", padding: 12, border: `1px solid ${C.blue}`, maxHeight: 320, overflowY: "auto", margin: 0, boxSizing: "border-box" }}>
               {shareText}
             </pre>
             <Divider />
@@ -557,7 +554,7 @@ export default function App() {
             }} style={{
               width: "100%", background: C.red, color: "#fff", border: "none",
               fontWeight: 800, fontSize: 15, padding: "14px", cursor: "pointer",
-              letterSpacing: 2, fontFamily: "inherit", marginTop: 8,
+              letterSpacing: 2, fontFamily: "inherit", marginTop: 8, boxSizing: "border-box"
             }}>{t.copyBtn}</button>
             {shareMsg && <div style={{ textAlign: "center", marginTop: 10, fontSize: 13, color: C.red, fontWeight: 700 }}>{shareMsg}</div>}
           </div>

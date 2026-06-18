@@ -1,4 +1,7 @@
 import { useState, useEffect, useRef } from "react";
+// 1. 引入你專案中的 supabase client (請確保你的專案中已有設定好 createClient 的 supabase.js)
+// 如果路徑不同，可以自行修改，例如 import { supabase } from "./supabaseClient";
+import { supabase } from "./supabase"; 
 
 const C = {
   cream: "#FFF8E7", red: "#930500", blue: "#95BBEA",
@@ -39,6 +42,10 @@ const T = {
     weight: { light: "🪶 Light", mid: "📦 Mid", heavy: "🧳 Heavy" },
     newGroup: "Day",
     editGroup: "✏️",
+    loginBtn: "🔑 Login / Sync",
+    logoutBtn: "🚪 Logout",
+    syncing: "🔄 Syncing...",
+    syncSuccess: "✅ Cloud Synced",
   },
   zh: {
     title: "🇰🇷 購物清單",
@@ -72,6 +79,10 @@ const T = {
     weight: { light: "🪶 輕", mid: "📦 中", heavy: "🧳 重" },
     newGroup: "Day",
     editGroup: "✏️",
+    loginBtn: "🔑 登入並同步",
+    logoutBtn: "🚪 登出",
+    syncing: "🔄 同步中...",
+    syncSuccess: "✅ 雲端已同步",
   },
 };
 
@@ -121,6 +132,11 @@ function ImageUpload({ value, onChange }) {
         onChange={e => {
           const file = e.target.files[0];
           if (!file) return;
+          // 超過 1.5MB 進行提示，防範本地字串爆掉
+          if (file.size > 1500000) {
+            alert("圖片檔案過大，請選擇較小的圖片(1.5MB以內)以確保同步流暢！");
+            return;
+          }
           const reader = new FileReader();
           reader.onload = ev => onChange(ev.target.result);
           reader.readAsDataURL(file);
@@ -220,6 +236,7 @@ function ItemRow({ item, onUpdate, onDelete, t }) {
           <select value={item.category} onChange={e => onUpdate({ ...item, category: e.target.value })}
             style={{ border: `1px solid ${C.blue}`, background: C.cream, fontSize: 13, padding: "8px 10px", color: C.black, outline: "none", fontFamily: "inherit", width: "100%" }}>
             <option value="">{t.selectCategory}</option>
+            <option value="Unassigned">{t.selectCategory}</option>
             {t.categories.map(c => <option key={c}>{c}</option>)}
           </select>
           <input value={item.link} onChange={e => onUpdate({ ...item, link: e.target.value })}
@@ -308,20 +325,138 @@ function GroupCard({ group, allItems, rate, onRename, onDelete, onAddItem, onUpd
 
 let _id = 1;
 const uid = () => `${Date.now()}_${_id++}`;
-const g0 = { id: uid(), name: "Day 1" };
-const i0 = { id: uid(), groupId: g0.id, name: "", image: null, krw: "", category: "", link: "", note: "", alt: "", weight: "", status: "to_buy" };
 
 export default function App() {
   const [lang, setLang] = useState("en");
   const t = T[lang];
-  const [groups, setGroups] = useState([g0]);
-  const [items, setItems] = useState([i0]);
+  
+  // 核心狀態設定：預設先向 LocalStorage 讀取，若無則初始化基本結構
+  const [groups, setGroups] = useState(() => {
+    const local = localStorage.getItem("kr_shop_groups");
+    if (local) return JSON.parse(local);
+    return [{ id: "g0_init", name: "Day 1" }];
+  });
+
+  const [items, setItems] = useState(() => {
+    const local = localStorage.getItem("kr_shop_items");
+    if (local) return JSON.parse(local);
+    return [{ id: "i0_init", groupId: "g0_init", name: "", image: null, krw: "", category: "", link: "", note: "", alt: "", weight: "", status: "to_buy" }];
+  });
+
   const [rate, setRate] = useState(0.023);
   const [rateTime, setRateTime] = useState("");
   const [tab, setTab] = useState("list");
   const [shareMsg, setShareMsg] = useState("");
   const [rateLoading, setRateLoading] = useState(false);
 
+  // 新增 Supabase 雲端專用狀態
+  const [user, setUser] = useState(null);
+  const [syncStatus, setSyncStatus] = useState(""); // 顯示目前同步狀況
+
+  // ==================== 1. 處理使用者帳號登入監聽 ====================
+  useEffect(() => {
+    // 檢查初始 Session
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setUser(session?.user || null);
+    });
+
+    // 監聽登入/登出狀態變化
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user || null);
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  // ==================== 2. 當使用者存在時，自動載入/保存雲端資料 ====================
+  // 載入雲端資料
+  const loadCloudData = async (currentUser) => {
+    if (!currentUser) return;
+    setSyncStatus("syncing");
+    try {
+      const { data, error } = await supabase
+        .from("user_lists")
+        .select("groups, items")
+        .eq("user_id", currentUser.id)
+        .maybeSingle();
+
+      if (error) throw error;
+      
+      // 如果雲端已有備份，覆蓋本地狀態
+      if (data) {
+        if (data.groups) setGroups(data.groups);
+        if (data.items) setItems(data.items);
+      }
+      setSyncStatus("success");
+      setTimeout(() => setSyncStatus(""), 2000);
+    } catch (err) {
+      console.error("Failed to load cloud data:", err);
+      setSyncStatus("");
+    }
+  };
+
+  // 觸發載入
+  useEffect(() => {
+    if (user) {
+      loadCloudData(user);
+    }
+  }, [user]);
+
+  // 本地快取備份與雲端防抖動自動更新 (Debounce Sync)
+  useEffect(() => {
+    localStorage.setItem("kr_shop_groups", JSON.stringify(groups));
+    localStorage.setItem("kr_shop_items", JSON.stringify(items));
+
+    if (!user) return;
+
+    // 設定防抖動，避免使用者連續輸入文字時頻繁向資料庫發送 Request
+    const timer = setTimeout(async () => {
+      setSyncStatus("syncing");
+      try {
+        const { error } = await supabase
+          .from("user_lists")
+          .upsert({
+            user_id: user.id,
+            groups: groups,
+            items: items,
+            updated_at: new Date()
+          }, { onConflict: "user_id" });
+
+        if (error) throw error;
+        setSyncStatus("success");
+        setTimeout(() => setSyncStatus(""), 2000);
+      } catch (err) {
+        console.error("Cloud upsert failed:", err);
+        setSyncStatus("");
+      }
+    }, 1000); // 停止輸入後 1 秒進行儲存
+
+    return () => clearTimeout(timer);
+  }, [groups, items, user]);
+
+  // ==================== 3. 處理 OAuth / 簡易登入與登出行為 ====================
+  const handleLogin = async () => {
+    // 這裡預設使用 Google 登入，如果你想換成其他登入方式只需微調此處
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: {
+        redirectTo: window.location.origin
+      }
+    });
+    if (error) alert("登入失敗: " + error.message);
+  };
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    setUser(null);
+    // 登出時可以選擇清空本地，或保留單機使用
+    localStorage.removeItem("kr_shop_groups");
+    localStorage.removeItem("kr_shop_items");
+    setGroups([{ id: uid(), name: "Day 1" }]);
+    setItems([{ id: uid(), groupId: "g0_init", name: "", image: null, krw: "", category: "", link: "", note: "", alt: "", weight: "", status: "to_buy" }]);
+  };
+
+  // ==================== 4. 匯率與清單原汁原味邏輯 ====================
   const fetchRate = () => {
     setRateLoading(true);
     fetch("https://api.frankfurter.app/latest?from=KRW&to=TWD")
@@ -355,17 +490,41 @@ export default function App() {
     <div style={{ maxWidth: 480, margin: "0 auto", fontFamily: "'Noto Sans TC', sans-serif", background: C.bg, minHeight: "100vh" }}>
       {/* Header */}
       <div style={{ background: C.red, padding: "16px 16px 12px", position: "relative" }}>
-        {/* Lang toggle */}
-        <button onClick={() => setLang(l => l === "en" ? "zh" : "en")} style={{
-          position: "absolute", top: 14, right: 14,
-          background: "rgba(255,255,255,0.15)", border: "1px solid rgba(255,255,255,0.4)",
-          color: "#fff", fontSize: 11, fontWeight: 800, padding: "4px 10px",
-          cursor: "pointer", fontFamily: "inherit", letterSpacing: 0.5,
-        }}>
-          {lang === "en" ? "中文" : "EN"}
-        </button>
+        
+        {/* 頂部按鈕群：語系與 Supabase 登入狀態控管 */}
+        <div style={{ position: "absolute", top: 14, right: 14, display: "flex", gap: 6, alignItems: "center" }}>
+          {/* 同步小綠燈 */}
+          {syncStatus === "syncing" && <span style={{ fontSize: 11, color: "#fff" }}>{t.syncing}</span>}
+          {syncStatus === "success" && <span style={{ fontSize: 11, color: "#bfffbf", fontWeight: "bold" }}>{t.syncSuccess}</span>}
+          
+          {user ? (
+            <button onClick={handleLogout} style={{
+              background: "rgba(0,0,0,0.3)", border: "1px solid rgba(255,255,255,0.4)",
+              color: "#fff", fontSize: 11, fontWeight: 800, padding: "4px 10px",
+              cursor: "pointer", fontFamily: "inherit"
+            }}>
+              {t.logoutBtn}
+            </button>
+          ) : (
+            <button onClick={handleLogin} style={{
+              background: C.blue, border: `1px solid ${C.blue}`,
+              color: C.black, fontSize: 11, fontWeight: 800, padding: "4px 10px",
+              cursor: "pointer", fontFamily: "inherit"
+            }}>
+              {t.loginBtn}
+            </button>
+          )}
 
-        <div style={{ fontSize: 10, color: "rgba(255,255,255,0.65)", letterSpacing: 3 }}>{t.subtitle}</div>
+          <button onClick={() => setLang(l => l === "en" ? "zh" : "en")} style={{
+            background: "rgba(255,255,255,0.15)", border: "1px solid rgba(255,255,255,0.4)",
+            color: "#fff", fontSize: 11, fontWeight: 800, padding: "4px 10px",
+            cursor: "pointer", fontFamily: "inherit", letterSpacing: 0.5,
+          }}>
+            {lang === "en" ? "中文" : "EN"}
+          </button>
+        </div>
+
+        <div style={{ fontSize: 10, color: "rgba(255,255,255,0.65)", letterSpacing: 3, marginTop: 4 }}>{t.subtitle}</div>
         <div style={{ fontSize: 26, fontWeight: 900, color: "#fff", letterSpacing: 1, marginTop: 2 }}>{t.title}</div>
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}>
           <span style={{ fontSize: 10, color: "rgba(255,255,255,0.65)" }}>
